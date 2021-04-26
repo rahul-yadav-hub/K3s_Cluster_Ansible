@@ -1,5 +1,8 @@
 # K3s_Cluster_Ansible
 # Installation
+## Prerequisite
+- Create a ansible vault for aws access key ID and secret key
+- Must have dynamic inventory configured
 ## To run master playbook
   ansible-playbook --vault-id rahul@prompt master.yaml
 ## To run worker playbook
