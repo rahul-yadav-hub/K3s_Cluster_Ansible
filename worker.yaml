@@ -1,0 +1,95 @@
+
+
+- hosts: localhost
+  tasks:
+        - name: Include credentials file(vault)
+          include_vars: credentials.yml
+
+        - name: Provison ec2 instance for Worker Node
+          ec2:
+            image: "ami-0d758c1134823146a"
+            instance_type: "t2.large"
+            key_name: "ec2_os1"
+            wait: yes
+            count: 1
+            state: present
+            region: "ap-south-1"
+            vpc_subnet_id: "subnet-0f7a7f67"
+            group_id: "sg-0d301d8b5d2ad3990"
+            assign_public_ip: yes
+            instance_tags:
+              Name: "{{ tag }}"
+            aws_access_key: "{{ user }}"
+            aws_secret_key: "{{ paswd }}"
+
+        - name: Updating the inventory or refreshing
+          meta: refresh_inventory
+
+- hosts: tag_Name_{{ tag }}
+  tasks:
+        - name: Update & upgrade packages
+          apt:
+                  upgrade: yes
+                  update_cache: yes
+        - name: Install curl
+          apt:
+            pkg: curl
+            state: present  
+        - name: Update Hostname
+          hostname:
+                  name: "{{ tag }}"
+        - name: Curl AWS to get this instance's public IP address
+          command: curl http://169.254.169.254/latest/meta-data/public-ipv4
+          register: ec2_public_ip
+
+- hosts: tag_Name_Master
+  tasks:
+        - name: Copy the hosts file from the Master to Controller node
+          fetch: src=/etc/hosts dest=/ flat=true
+
+- hosts: tag_Name_{{ tag }}
+  tasks: 
+
+        - name: Copy the file from Controller to Worker
+          copy: src=/hosts dest=/etc/
+        
+        - name: Add worker node IP to hosts file
+          lineinfile:
+                  path: /etc/hosts
+                  line: "{{ec2_public_ip.stdout}} {{ tag }}"
+        - name: Copy the hosts file from the Worker to Controller node
+          fetch: src=/etc/hosts dest=/ flat=true
+
+
+- hosts: tag_Name_Master
+  tasks:
+        - name: Add new worker node IP to Master hosts file
+          copy: src=/hosts dest=/etc/
+          
+        - name: Change file access node-token
+          file:
+            path: /var/lib/rancher/k3s/server
+            mode: "g+rx,o+rx"
+
+        - name: Read node-token from master
+          slurp:
+            src: /var/lib/rancher/k3s/server/node-token
+          register: node_token
+
+        - name: Add K3s Token and Hash to dummy host"
+          add_host:
+            name:   "K3S_TOKEN_HOLDER"
+            token:  "{{ node_token.content | b64decode | regex_replace('\n', '') }}"
+- hosts: tag_Name_{{ tag }}
+  tasks:
+        - name: Print token
+          debug:
+            var: hostvars['K3S_TOKEN_HOLDER']['token']
+
+        - name: Install K3s using curl
+          shell: curl -sfL https://get.k3s.io | K3S_URL=https://Master:6443 K3S_TOKEN="{{ hostvars['K3S_TOKEN_HOLDER']['token'] }}" sh -
+        
+      
+
+
+

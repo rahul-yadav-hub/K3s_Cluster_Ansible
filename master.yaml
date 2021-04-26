@@ -1,0 +1,100 @@
+- hosts: localhost
+  tasks:
+        - name: Include credentials file(vault)
+          include_vars: credentials.yml
+
+        - name: Provison ec2 instances for Master Node
+          ec2:
+            image: "ami-0d758c1134823146a"
+            instance_type: "t2.large"
+            key_name: "ec2_os1"
+            wait: yes
+            count: 1
+            state: present
+            region: "ap-south-1"
+            vpc_subnet_id: "subnet-0f7a7f67"
+            group_id: "sg-0d301d8b5d2ad3990"
+            assign_public_ip: yes
+            instance_tags:
+              Name: Master
+            aws_access_key: "{{ user }}"
+            aws_secret_key: "{{ paswd }}"
+
+
+        - name: Updating the inventory or refreshing
+          meta: refresh_inventory
+
+- hosts: tag_Name_Master
+  tasks:
+        - name: Update & upgrade packages
+          apt:
+                  upgrade: yes
+                  update_cache: yes
+        - name: Install curl
+          apt:
+            pkg: curl
+            state: present  
+        - name: Update Hostnames
+          hostname:
+                  name: "Master"
+        - name: Curl AWS to get this instance's public IP address
+          command: curl http://169.254.169.254/latest/meta-data/public-ipv4
+          register: ec2_public_ip
+
+        - name: Add master instance IP to hosts file
+          lineinfile:
+                  path: /etc/hosts
+                  line: "{{ec2_public_ip.stdout}} Master"
+        - name: Install K3s using curl
+          shell: curl -sfL https://get.k3s.io | sh -
+        - name: Install kubectl using curl
+          shell: curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+        - name: Making kubectl executable
+          shell: chmod +x /home/ubuntu/kubectl
+        - name: Move kubectl to /usr/bin
+          command: mv /home/ubuntu/kubectl /usr/bin/
+        - name: Create directory .kube
+          file:
+            path: /.kube
+            state: directory
+            mode: "u=rwx,g=rx,o="
+
+        - name: Copy config file to /.kube
+          copy:
+            src: /etc/rancher/k3s/k3s.yaml
+            dest: /.kube/config
+            remote_src: yes
+            mode: "u=rw,g=,o=" 
+        - name: Replace https://localhost:6443 by https://master:6443
+          command: kubectl config set-cluster default --server=https://Master:6443 --kubeconfig /.kube/config
+        - name: Copy the files from Controller to Master
+          copy:
+            src: "{{ item }}" 
+            dest: /home/ubuntu/
+          loop: "{{ files }}"
+          vars:
+            files:
+            - "admin-sa.yml"
+            - "admin-rbac.yml"
+            - "kubernetes-dashboard-deployment.yml"
+            - "pod.sh"
+            - "svc.sh"
+
+        - name: Deploying kubernetes dashboard
+          command: kubectl apply -f https://raw.githubusercontent.com/kubernetes/dashboard/v2.0.0/aio/deploy/recommended.yaml
+        - name: Changing service and re-deploying kubernetes dashboard 
+          command: kubectl apply -f kubernetes-dashboard-deployment.yml
+        - name: Creating  admin service account
+          command: kubectl apply -f admin-sa.yml
+        - name: Creating cluster role binding
+          command: kubectl apply -f admin-rbac.yml
+        - name: Setting shell variable
+          shell: SA_NAME="kube-admin"
+        - name: Obtaining admin user token
+          shell: kubectl -n kube-system describe secret $(kubectl -n kube-system get secret | grep ${SA_NAME} | awk '{print $1}')
+          register: token
+        - name: Print token
+          debug:
+                  var: token
+
+
